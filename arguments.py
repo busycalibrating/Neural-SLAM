@@ -32,7 +32,9 @@ def get_args():
     parser.add_argument('--train_slam', type=int, default=1,
                         help="""0: Do not train the Neural SLAM Module
                                 1: Train the Neural SLAM Module (default: 1)""")
-
+    parser.add_argument('--debug', action='store_true', default=False,
+                        help='Enables ipdb debugger')
+ 
     # Logging, loading models, visualization
     parser.add_argument('--log_interval', type=int, default=10,
                         help="""log interval, one log per n updates

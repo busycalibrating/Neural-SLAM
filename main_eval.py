@@ -63,7 +63,10 @@ def get_local_map_boundaries(agent_loc, local_sizes, full_sizes):
 
 
 def main():
-    import ipdb; ipdb.set_trace()
+    if args.debug:
+        import ipdb 
+        ipdb.set_trace()
+
     # Setup Logging
     log_dir = "{}/models/{}/".format(args.dump_location, args.exp_name)
     dump_dir = "{}/dump/{}/".format(args.dump_location, args.exp_name)
@@ -154,31 +157,44 @@ def main():
     ### 4-7 store local map boundaries
     planner_pose_inputs = np.zeros((num_scenes, 7))
 
-    def init_map_and_pose(keep_map: bool = False):
-        # TODO: handle cacheing the map
-        full_map.fill_(0.)
+    def init_map_and_pose(translation = None):
+        if translation is None:
+            full_map.fill_(0.)  # only reset if no translation specified
 
-        # TODO -> initialize the full pose correctly; can I get this from the env GT?
         full_pose.fill_(0.)
         full_pose[:, :2] = args.map_size_cm / 100.0 / 2.0
+        # apply translation to full_pose
+        if translation is not None:
+            # if you don't do this, you'll be assigning a new variable 
+            #   'full_pose' which means that the globally defined one won't be
+            #   accessible
+            full_pose[:] = full_pose - translation
 
+        # this should be ok
         locs = full_pose.cpu().numpy()
         planner_pose_inputs[:, :3] = locs 
+ 
         for e in range(num_scenes):
             r, c = locs[e, 1], locs[e, 0]
+             
+            # from meters to the map (pixel) coords. I.e. a 480x480 map with
+            # 24m x 24m, inits to (12, 12, 0) and (240, 240)
             loc_r, loc_c = [int(r * 100.0 / args.map_resolution),
                             int(c * 100.0 / args.map_resolution)]
-
+ 
             full_map[e, 2:, loc_r - 1:loc_r + 2, loc_c - 1:loc_c + 2] = 1.0
-
+ 
+            # should be chill
             lmb[e] = get_local_map_boundaries((loc_r, loc_c),
                                               (local_w, local_h),
                                               (full_w, full_h))
-
+ 
+            # should be chill
             planner_pose_inputs[e, 3:] = lmb[e]
             origins[e] = [lmb[e][2] * args.map_resolution / 100.0,
                           lmb[e][0] * args.map_resolution / 100.0, 0.]
-
+ 
+        # chill
         for e in range(num_scenes):
             local_map[e] = full_map[e, :, lmb[e, 0]:lmb[e, 1], lmb[e, 2]:lmb[e, 3]]
             local_pose[e] = full_pose[e] - \
@@ -276,11 +292,18 @@ def main():
          in range(num_scenes)])
     ).float().to(device)
 
-    raw_poses = torch.from_numpy(np.asarray(  
+    # TODO: use the raw poses to compute the necessary transformation between
+    #   experiment resets. This will be cached for the rest of the experiments
+    #   for a single scene. This may cause issues if scenes change in an index,
+    #   and also if the scenes have two stories (eg. the big one in the val set.)
+    initial_raw_poses = torch.from_numpy(np.asarray(  
         [infos[env_idx]['raw_sensor_pose'] for env_idx
          in range(num_scenes)])
-    ).float().to(device)
+    ).float() #.to(device)
+    initial_raw_poses[:, 2] = np.rad2deg(initial_raw_poses[:, 2])
+    initial_raw_poses = initial_raw_poses.to(device)
 
+    # These should all be initialized
     _, _, local_map[:, 0, :, :], local_map[:, 1, :, :], _, local_pose = \
         nslam_module(obs, obs, poses, local_map[:, 0, :, :],
                      local_map[:, 1, :, :], local_pose)
@@ -372,7 +395,7 @@ def main():
 
             # ------------------------------------------------------------------
             # Env step
-            obs, rew, done, infos = envs.step(l_action)  # TODO - environment step
+            obs, rew, done, infos = envs.step(l_action)  # TODO: environment step
 
             l_masks = torch.FloatTensor([0 if x else 1
                                          for x in done]).to(device)
@@ -382,10 +405,26 @@ def main():
             # ------------------------------------------------------------------
             # Reinitialize variables when episode ends
             if step == args.max_episode_length - 1:  # Last episode step
+                # TODO: modify to keep cache of map
 
-                # TODO - modify to keep cache of map
+                # TODO: get the coordinate transformations with respect to the
+                # first coordinates used to create the map.
+                new_raw_poses = torch.from_numpy(np.asarray(
+                    [infos[env_idx]['raw_sensor_pose'] for env_idx
+                     in range(num_scenes)])
+                ).float() #.to(device)
+                # Note that the raw sensor pose comes in rad, while map pose is
+                # in degrees
+                new_raw_poses[:, 2] = np.rad2deg(new_raw_poses[:, 2])
+                new_raw_poses = new_raw_poses.to(device)
 
-                init_map_and_pose()
+                # TODO: compute the updated coordinates of where the agent is
+                #   with respect to the initial raw map coordinates the map was 
+                #   built around
+                translation = initial_raw_poses - new_raw_poses
+
+                # TODO: reset the environment with this translation applied
+                init_map_and_pose(translation)
                 del last_obs
                 last_obs = obs.detach()
             # ------------------------------------------------------------------
@@ -417,11 +456,6 @@ def main():
                  in range(num_scenes)])
             ).float().to(device)
 
-            raw_poses = torch.from_numpy(np.asarray(  # TODO - or is this the groundtruth poses?
-                [infos[env_idx]['raw_sensor_pose'] for env_idx
-                 in range(num_scenes)])
-            ).float().to(device)
-
 
 
             _, _, local_map[:, 0, :, :], local_map[:, 1, :, :], _, local_pose = \
@@ -436,7 +470,6 @@ def main():
                 loc_r, loc_c = [int(r * 100.0 / args.map_resolution),
                                 int(c * 100.0 / args.map_resolution)]
 
-                # TODO: what are the - 2, + 3 about? 
                 local_map[e, 2:, loc_r - 2:loc_r + 3, loc_c - 2:loc_c + 3] = 1.
             # ------------------------------------------------------------------
 
@@ -455,6 +488,7 @@ def main():
                     loc_r, loc_c = [int(r * 100.0 / args.map_resolution),
                                     int(c * 100.0 / args.map_resolution)]
 
+                    # TODO: updates every step it seems
                     lmb[e] = get_local_map_boundaries((loc_r, loc_c),
                                                       (local_w, local_h),
                                                       (full_w, full_h))

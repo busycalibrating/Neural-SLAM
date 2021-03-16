@@ -63,6 +63,10 @@ def get_local_map_boundaries(agent_loc, local_sizes, full_sizes):
 
 
 def main():
+    if args.debug:
+        import ipdb 
+        ipdb.set_trace()
+
     # Setup Logging
     log_dir = "{}/models/{}/".format(args.dump_location, args.exp_name)
     dump_dir = "{}/dump/{}/".format(args.dump_location, args.exp_name)
