@@ -184,6 +184,7 @@ class Exploration_Env(habitat.RLEnv):
             'fp_proj': fp_proj,
             'fp_explored': fp_explored,
             'sensor_pose': [0., 0., 0.],
+            'raw_sensor_pose': self.get_sim_location(),
             'pose_err': [0., 0., 0.],
         }
 
@@ -227,7 +228,7 @@ class Exploration_Env(habitat.RLEnv):
         depth = _preprocess_depth(obs['depth'])
 
         # Get base sensor and ground-truth pose
-        dx_gt, dy_gt, do_gt = self.get_gt_pose_change()
+        dx_gt, dy_gt, do_gt = self.get_gt_pose_change() # TODO
         dx_base, dy_base, do_base = self.get_base_pose_change(
                                         action, (dx_gt, dy_gt, do_gt))
 
@@ -285,6 +286,7 @@ class Exploration_Env(habitat.RLEnv):
         self.info['fp_proj'] = fp_proj
         self.info['fp_explored']= fp_explored
         self.info['sensor_pose'] = [dx_base, dy_base, do_base]
+        self.info['raw_sensor_pose'] = self.get_sim_location()
         self.info['pose_err'] = [dx_gt - dx_base,
                                  dy_gt - dy_base,
                                  do_gt - do_base]

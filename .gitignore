@@ -1,3 +1,13 @@
+# Project specific
+data/
+
+# if data is a symlink
+data 
+!*/data
+
+pretrained_models/
+results/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
