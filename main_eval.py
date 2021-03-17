@@ -38,6 +38,24 @@ torch.manual_seed(args.seed)
 if args.cuda:
     torch.cuda.manual_seed(args.seed)
 
+def rotate_around_point(point, theta, origin=(0, 0), mode='deg'):
+    """Rotate a point around a given point.
+    """
+    if mode == 'deg':
+        radians = np.deg2rad(theta)
+    elif mode == 'rad':
+        radians = theta
+    else:
+        raise NotImplementedError
+
+    x, y = point
+    ox, oy = origin
+
+    qx = ox + np.cos(radians) * (x - ox) + np.sin(radians) * (y - oy)
+    qy = oy + -np.sin(radians) * (x - ox) + np.cos(radians) * (y - oy)
+
+    return qx, qy
+
 
 def get_local_map_boundaries(agent_loc, local_sizes, full_sizes):
     loc_r, loc_c = agent_loc
@@ -286,12 +304,6 @@ def main():
     # Begin running stuff
     #---------------------------------------------------------------------------
 
-    # Predict map from frame 1:
-    poses = torch.from_numpy(np.asarray(
-        [infos[env_idx]['sensor_pose'] for env_idx
-         in range(num_scenes)])
-    ).float().to(device)
-
     # TODO: use the raw poses to compute the necessary transformation between
     #   experiment resets. This will be cached for the rest of the experiments
     #   for a single scene. This may cause issues if scenes change in an index,
@@ -302,6 +314,22 @@ def main():
     ).float() #.to(device)
     initial_raw_poses[:, 2] = np.rad2deg(initial_raw_poses[:, 2])
     initial_raw_poses = initial_raw_poses.to(device)
+
+    new_raw_poses = torch.from_numpy(np.asarray(
+        [infos[env_idx]['raw_sensor_pose'] for env_idx
+         in range(num_scenes)])
+    ).float() #.to(device)
+    new_raw_poses[:, 2] = np.rad2deg(new_raw_poses[:, 2])
+    new_raw_poses = new_raw_poses.to(device)
+
+    translation = initial_raw_poses - new_raw_poses
+
+    # Predict map from frame 1:
+    poses = torch.from_numpy(np.asarray(
+        [infos[env_idx]['sensor_pose'] for env_idx
+         in range(num_scenes)])
+    ).float().to(device)
+
 
     # These should all be initialized
     _, _, local_map[:, 0, :, :], local_map[:, 1, :, :], _, local_pose = \
@@ -395,7 +423,7 @@ def main():
 
             # ------------------------------------------------------------------
             # Env step
-            obs, rew, done, infos = envs.step(l_action)  # TODO: environment step
+            obs, rew, done, infos = envs.step(l_action)
 
             l_masks = torch.FloatTensor([0 if x else 1
                                          for x in done]).to(device)
@@ -407,7 +435,7 @@ def main():
             if step == args.max_episode_length - 1:  # Last episode step
                 # TODO: modify to keep cache of map
 
-                # TODO: get the coordinate transformations with respect to the
+                # get the coordinate transformations with respect to the
                 # first coordinates used to create the map.
                 new_raw_poses = torch.from_numpy(np.asarray(
                     [infos[env_idx]['raw_sensor_pose'] for env_idx
@@ -418,12 +446,12 @@ def main():
                 new_raw_poses[:, 2] = np.rad2deg(new_raw_poses[:, 2])
                 new_raw_poses = new_raw_poses.to(device)
 
-                # TODO: compute the updated coordinates of where the agent is
+                # compute the updated coordinates of where the agent is
                 #   with respect to the initial raw map coordinates the map was 
                 #   built around
                 translation = initial_raw_poses - new_raw_poses
 
-                # TODO: reset the environment with this translation applied
+                # reset the environment with this translation applied
                 init_map_and_pose(translation)
                 del last_obs
                 last_obs = obs.detach()
@@ -488,7 +516,6 @@ def main():
                     loc_r, loc_c = [int(r * 100.0 / args.map_resolution),
                                     int(c * 100.0 / args.map_resolution)]
 
-                    # TODO: updates every step it seems
                     lmb[e] = get_local_map_boundaries((loc_r, loc_c),
                                                       (local_w, local_h),
                                                       (full_w, full_h))
@@ -571,10 +598,34 @@ def main():
                         extras=g_rollouts.extras[g_step + 1],
                         deterministic=False
                     )
+
                 cpu_actions = nn.Sigmoid()(g_action).cpu().numpy()
+
                 global_goals = [[int(action[0] * local_w),
                                  int(action[1] * local_h)]
                                 for action in cpu_actions]
+
+                new_global_goals = []
+                for _goal, _offset, _origin in zip(global_goals, 
+                                                   translation.cpu().numpy(), 
+                                                   new_raw_poses.cpu().numpy()):
+
+                    origin_x, origin_y = _origin[:2]
+                    x, y, theta = _offset
+
+                    # FIXME: this is still not working properly
+                    origin_x = (origin_x / args.map_size_cm * 100 + 0.5) * local_w
+                    origin_y = (origin_y / args.map_size_cm * 100 + 0.5) * local_h
+                    x = x / args.map_size_cm * 100 * local_w
+                    y = y / args.map_size_cm * 100 * local_h
+
+                    rot_x, rot_y = rotate_around_point(_goal, theta, [origin_x, origin_y])
+                    rot_x -= x
+                    rot_y -= y
+                    new_global_goals.append([int(rot_x), int(rot_y)])
+                
+                global_goals = new_global_goals.copy()
+                del new_global_goals
 
                 g_reward = 0
                 g_masks = torch.ones(num_scenes).float().to(device)
@@ -589,6 +640,7 @@ def main():
                 p_input['pose_pred'] = planner_pose_inputs[e]
                 p_input['goal'] = global_goals[e]
 
+            # TODO: here is where the goal gets updated 
             output = envs.get_short_term_goal(planner_inputs)
             # ------------------------------------------------------------------
 

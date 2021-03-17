@@ -56,7 +56,7 @@ class Exploration_Env(habitat.RLEnv):
             self.figure, self.ax = plt.subplots(1,2, figsize=(6*16/9, 6),
                                                 facecolor="whitesmoke",
                                                 num="Thread {}".format(rank))
-
+           
         self.args = args
         self.num_actions = 3
         self.dt = 10
@@ -99,6 +99,24 @@ class Exploration_Env(habitat.RLEnv):
         self.scene_name = None
         self.maps_dict = {}
 
+        # FIXME: super hacky way to get the env to cache the first map...
+        #   idk how to access attributes of the env from the VectorEnv wrapper
+        self._cache_map = False
+        if args.cache_map:
+            self._cache_map = True
+        
+        # Recall the transform is:
+        # pt_new_coords = pt - (current - reference)
+        self._reference_pose = (0., 0., 0.)
+        self._current_experiment_pose = None
+
+        print("My crappy thing: ", self._reference_pose)
+    
+    # TODO: this doesn't work
+    def save_reference_pose(self):
+        self._reference_pose = self.get_sim_location()
+        logger.error("Did the thing, saved poses as %s", self._reference_pose)
+
     def randomize_env(self):
         self._env._episode_iterator._shuffle_iterator()
 
@@ -140,7 +158,7 @@ class Exploration_Env(habitat.RLEnv):
         while self.explorable_map is None:
             obs = super().reset()
             full_map_size = args.map_size_cm//args.map_resolution
-            self.explorable_map = self._get_gt_map(full_map_size)
+            self.explorable_map = self._get_gt_map(full_map_size)  # this can return None
         self.prev_explored_area = 0.
 
         # Preprocess observations
@@ -595,9 +613,25 @@ class Exploration_Env(habitat.RLEnv):
 
         sim_map[sim_map > 0] = 1.
 
+        # FIXME: hacky way of caching the initial pose for an experiment in a scene
+        first_update = False
+        if self._cache_map:
+            # _x, _y, _o = self.get_sim_location()
+            self._reference_pose = self.get_sim_location() #(_x, _y, np.rad2deg(_o))
+            self._cache_map = False
+            first_update = True
+            logger.error('Updating reference pose for %s:\n%s', self.scene_name, self._reference_pose)
+
         # Transform the map to align with the agent
+        # TODO: update this stuff
         min_x, min_y = self.map_obj.origin/100.0
         x, y, o = self.get_sim_location()
+
+        if not first_update:
+            x = self._reference_pose[0]
+            y = self._reference_pose[1]
+            o = self._reference_pose[2]
+
         x, y = -x - min_x, -y - min_y
         range_x, range_y = self.map_obj.max/100. - self.map_obj.origin/100.
 
@@ -606,26 +640,24 @@ class Exploration_Env(habitat.RLEnv):
         grid_size = int(scale*max(map_size))
         grid_map = np.zeros((grid_size, grid_size))
 
-        grid_map[(grid_size - map_size[0])//2:
-                 (grid_size - map_size[0])//2 + map_size[0],
-                 (grid_size - map_size[1])//2:
-                 (grid_size - map_size[1])//2 + map_size[1]] = sim_map
+        grid_map[(grid_size - map_size[0])//2 : (grid_size - map_size[0])//2 + map_size[0],
+                 (grid_size - map_size[1])//2 : (grid_size - map_size[1])//2 + map_size[1]] = sim_map
 
         if map_size[0] > map_size[1]:
             st = torch.tensor([[
-                    (x - range_x/2.) * 2. / (range_x * scale) \
-                             * map_size[1] * 1. / map_size[0],
-                    (y - range_y/2.) * 2. / (range_y * scale),
+                    (x - range_x/2.) * 2. / (range_x * scale) * map_size[1] * 1. / map_size[0],
+                    (y - range_y/2.) * 2. / (range_y * scale), 
                     180.0 + np.rad2deg(o)
                 ]])
 
         else:
             st = torch.tensor([[
                     (x - range_x/2.) * 2. / (range_x * scale),
-                    (y - range_y/2.) * 2. / (range_y * scale) \
-                            * map_size[0] * 1. / map_size[1],
+                    (y - range_y/2.) * 2. / (range_y * scale) * map_size[0] * 1. / map_size[1],
                     180.0 + np.rad2deg(o)
                 ]])
+
+        logger.error('st for %s:\n\t%s', self.scene_name, st)
 
         rot_mat, trans_mat = get_grid(st, (1, 1,
             grid_size, grid_size), torch.device("cpu"))

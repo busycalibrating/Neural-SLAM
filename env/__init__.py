@@ -19,6 +19,9 @@ class VecPyTorch():
         self.action_space = venv.action_space
         self.device = device
 
+    def save_reference_pose(self):
+        self.venv.save_reference_pose()
+
     def reset(self):
         obs, info = self.venv.reset()
         obs = torch.from_numpy(obs).float().to(self.device)
